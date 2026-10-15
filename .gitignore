@@ -1,0 +1,8 @@
+result*
+.ghc
+.compiler
+.build/
+dist-newstyle/
+*.hi
+*.o
+.lantern/

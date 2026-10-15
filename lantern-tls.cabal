@@ -1,0 +1,37 @@
+cabal-version: 2.4
+name: lantern-tls
+version: 0.1.0
+synopsis: Experimental independently implemented TLS 1.3 server protocol
+license: MIT
+license-file: LICENSE
+build-type: Simple
+
+library
+  hs-source-dirs: src
+  exposed-modules: Lantern.TLS, Lantern.TLS.Crypto, Lantern.TLS.Wire, Lantern.TLS.Record, Lantern.TLS.PKI
+  other-modules: Lantern.TLS.Credentials, Lantern.TLS.Handshake, Lantern.TLS.Client
+  build-depends: base >=4.18 && <5, bytestring, containers, crypton, memory, crypton-x509, crypton-x509-store, crypton-x509-validation, crypton-x509-system, hourglass
+  ghc-options: -Wall -Wcompat -O2
+  default-language: Haskell2010
+
+test-suite vectors
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Vectors.hs
+  build-depends: base, lantern-tls, bytestring, QuickCheck, memory
+  ghc-options: -Wall -threaded
+  default-language: Haskell2010
+
+executable tls-echo
+  hs-source-dirs: test
+  main-is: Echo.hs
+  build-depends: base, bytestring, network, lantern-tls
+  ghc-options: -Wall -threaded
+  default-language: Haskell2010
+
+executable tls-fetch
+  hs-source-dirs: test
+  main-is: Fetch.hs
+  build-depends: base, bytestring, network, lantern-tls
+  ghc-options: -Wall -threaded
+  default-language: Haskell2010

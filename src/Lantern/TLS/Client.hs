@@ -1,0 +1,183 @@
+{-# LANGUAGE OverloadedStrings #-}
+-- TLS wire/state code is ours; PKIX certificate-path verification is a
+-- cryptographic trust primitive delegated to crypton-x509-validation.
+module Lantern.TLS.Client (clientHandshake, TrustStore, systemTrust, trustFile) where
+import Control.Monad (unless)
+import Crypto.Error
+import Crypto.Hash (SHA256(..))
+import qualified Crypto.PubKey.Curve25519 as X
+import qualified Crypto.PubKey.RSA.PSS as PSS
+import qualified Crypto.PubKey.RSA.Types as RSA
+import Crypto.PubKey.ECC.Types (CurveName(SEC_p256r1))
+import Crypto.Random (getRandomBytes)
+import Data.ByteArray (convert,constEq)
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as C
+import Data.IORef
+import Data.List (nub)
+import Data.X509
+import Data.X509.CertificateStore
+import Data.X509.Validation
+import System.X509 (getSystemCertificateStore)
+import Lantern.TLS.Crypto
+import Lantern.TLS.Record
+import Lantern.TLS.Wire
+
+type TrustStore = CertificateStore
+systemTrust :: IO TrustStore
+systemTrust = getSystemCertificateStore
+trustFile :: FilePath -> IO TrustStore
+trustFile path = readCertificateStore path >>= maybe (abort "cannot load trust store") pure
+
+clientHandshake :: RecordIO -> TrustStore -> String -> IO (B.ByteString,B.ByteString)
+clientHandshake io trust hostname = do
+  ensure (not (null hostname) && all (\c -> c > ' ' && c < '\DEL') hostname) "invalid TLS hostname"
+  private <- X.generateSecretKey
+  random <- getRandomBytes 32
+  session <- getRandomBytes 32
+  let public = convert (X.toPublic private) :: B.ByteString
+      ext = extension 0 (vector 2 ("\x00" <> vector 2 (C.pack hostname))) <>
+        extension 10 (vector 2 "\x00\x1d") <>
+        extension 13 (vector 2 "\x08\x04\x04\x03\x08\x07") <>
+        extension 50 (vector 2 "\x04\x01\x05\x01\x06\x01\x04\x03\x05\x03\x08\x04\x08\x05\x08\x07") <>
+        extension 16 (vector 2 (vector 1 "http/1.1")) <>
+        extension 43 (vector 1 "\x03\x04") <>
+        extension 51 (vector 2 ("\x00\x1d" <> vector 2 public))
+      clientHello = message 1 ("\x03\x03" <> random <> vector 1 session <>
+                              vector 2 "\x13\x01" <> "\x01\x00" <> vector 2 ext)
+  sendPlain io 22 clientHello
+  serverHello <- plainHandshake io B.empty (0 :: Int)
+  (serverBody,helloKind) <- decodeMessage serverHello
+  ensure (helloKind == 2) "ServerHello required"
+  serverKey <- either abort pure (runParser (parseServerHello session) serverBody)
+  peer <- case X.publicKey serverKey of CryptoPassed p -> pure p; CryptoFailed _ -> abort "invalid server key"
+  let shared = convert (X.dh peer private) :: B.ByteString
+  ensure (not (shared `constEq` B.replicate 32 0)) "invalid server shared secret"
+  let zeros = B.replicate 32 0
+      handshakeSecret = extract (deriveSecret (extract zeros zeros) "derived" B.empty) shared
+      transcript0 = clientHello <> serverHello
+      serverHS = deriveSecret handshakeSecret "s hs traffic" transcript0
+      clientHS = deriveSecret handshakeSecret "c hs traffic" transcript0
+  encryptedState <- newIORef (0,B.empty,0 :: Int)
+  let next = encryptedHandshake io serverHS encryptedState
+  ee <- next
+  (eeBody,eeKind) <- decodeMessage ee
+  ensure (eeKind == 8) "EncryptedExtensions required"
+  exts <- either abort pure (runParser (vec 2) eeBody >>= parseExtensions)
+  ensure (length exts == length (nub (map fst exts)) && all ((`elem` [0,16]) . fst) exts) "unsolicited server extension"
+  case lookup 0 exts of Nothing -> pure (); Just b -> ensure (B.null b) "invalid SNI acknowledgement"
+  case lookup 16 exts of
+    Nothing -> pure ()
+    Just b -> ensure (runParser (vec 2 >>= \p -> either fail pure (runParser (vec 1) p)) b == Right "http/1.1") "invalid server ALPN"
+  certificate <- next
+  (certificateBody,certificateKind) <- decodeMessage certificate
+  ensure (certificateKind == 11) "Certificate required"
+  chainBytes <- either abort pure (runParser parseCertificates certificateBody)
+  chain <- mapM (either (const (abort "invalid X.509 certificate")) pure . decodeSignedCertificate) chainBytes
+  let cache = ValidationCache (\_ _ _ -> pure ValidationCacheUnknown) (\_ _ _ -> pure ())
+      checks = defaultChecks {checkLeafKeyPurpose=[KeyUsagePurpose_ServerAuth],checkLeafKeyUsage=[KeyUsage_digitalSignature]}
+  failures <- validate HashSHA256 defaultHooks checks trust cache (hostname,B.empty) (CertificateChain chain)
+  ensure (null failures) "server certificate validation failed"
+  pub <- case chain of
+    c:_ -> pure (certPubKey (getCertificate c))
+    [] -> abort "empty server certificate chain"
+  cv <- next
+  (cvBody,cvKind) <- decodeMessage cv
+  ensure (cvKind == 15) "CertificateVerify required"
+  (scheme,signature) <- either abort pure (runParser ((,) <$> uint 2 <*> vec 2) cvBody)
+  let transcript1 = transcript0 <> ee <> certificate
+      signatureInput = B.replicate 64 32 <> "TLS 1.3, server CertificateVerify\x00" <> sha256 transcript1
+      valid = case (scheme,pub) of
+        (0x0804,PubKeyRSA rsa) -> RSA.public_size rsa >= 256 && RSA.public_size rsa <= 1024 && PSS.verify (PSS.defaultPSSParams SHA256) rsa signatureInput signature
+        (0x0403,PubKeyEC (PubKeyEC_Named SEC_p256r1 _)) -> verifySignature (SignatureALG HashSHA256 PubKeyALG_EC) pub signatureInput signature == SignaturePass
+        (0x0807,PubKeyEd25519 _) -> verifySignature (SignatureALG_IntrinsicHash PubKeyALG_Ed25519) pub signatureInput signature == SignaturePass
+        _ -> False
+  ensure valid "server CertificateVerify failed"
+  serverFinished <- next
+  (verifyData,finishedKind) <- decodeMessage serverFinished
+  let transcript2 = transcript1 <> cv
+  ensure (finishedKind == 20 && verifyData `constEq` finished serverHS transcript2) "server Finished verification failed"
+  (_,left,_) <- readIORef encryptedState
+  ensure (B.null left) "server Finished must end its record"
+  let transcript3 = transcript2 <> serverFinished
+      masterSecret = extract (deriveSecret handshakeSecret "derived" B.empty) zeros
+      serverApp = deriveSecret masterSecret "s ap traffic" transcript3
+      clientApp = deriveSecret masterSecret "c ap traffic" transcript3
+  sendPlain io 20 "\x01"
+  _ <- sendProtected io clientHS 0 22 (message 20 (finished clientHS transcript3))
+  pure (serverApp,clientApp)
+
+parseServerHello :: B.ByteString -> Parser B.ByteString
+parseServerHello session = do
+  version <- uint 2
+  unless (version == 0x0303) (fail "invalid legacy version")
+  random <- takeN 32
+  unless (random /= retryRandom) (fail "HelloRetryRequest unsupported")
+  sid <- vec 1
+  unless (sid == session) (fail "session ID mismatch")
+  suite <- uint 2
+  compression <- uint 1
+  unless (suite == 0x1301 && compression == 0) (fail "unexpected cipher/compression")
+  exts <- vec 2 >>= either fail pure . parseExtensions
+  unless (length exts == 2 && length (nub (map fst exts)) == 2 && lookup 43 exts == Just "\x03\x04") (fail "invalid ServerHello extensions")
+  key <- maybe (fail "missing key share") pure (lookup 51 exts)
+  either fail pure (runParser (do
+    group <- uint 2
+    unless (group == 29) (fail "wrong key share group")
+    share <- vec 2
+    unless (B.length share == 32) (fail "wrong key share length")
+    pure share) key)
+  where retryRandom = B.pack [0xcf,0x21,0xad,0x74,0xe5,0x9a,0x61,0x11,0xbe,0x1d,0x8c,0x02,0x1e,0x65,0xb8,0x91,
+                              0xc2,0xa2,0x11,0x16,0x7a,0xbb,0x8c,0x5e,0x07,0x9e,0x09,0xe2,0xc8,0xa8,0x33,0x9c]
+
+parseCertificates :: Parser [B.ByteString]
+parseCertificates = do
+  context <- vec 1
+  unless (B.null context) (fail "nonempty server certificate context")
+  bytes <- vec 3
+  certs <- either fail pure $ runParser (parseList (do
+    cert <- vec 3
+    unless (not (B.null cert) && B.length cert <= 65536) (fail "invalid certificate length")
+    exts <- vec 2 >>= either fail pure . parseExtensions
+    unless (length exts == length (nub (map fst exts))) (fail "duplicate certificate extensions")
+    pure cert)) bytes
+  unless (not (null certs) && length certs <= 8) (fail "invalid certificate chain length")
+  pure certs
+
+decodeMessage :: B.ByteString -> IO (B.ByteString,Int)
+decodeMessage = either abort pure . runParser (do k <- uint 1; b <- vec 3; pure (b,k))
+messageSize :: B.ByteString -> Maybe Int
+messageSize b | B.length b < 4 = Nothing
+              | otherwise = Just (4+B.foldl' (\n c -> n*256+fromIntegral c) 0 (B.take 3 (B.drop 1 b)))
+
+plainHandshake :: RecordIO -> B.ByteString -> Int -> IO B.ByteString
+plainHandshake io buffer fragments = do
+  ensure (fragments < 128) "too many ServerHello fragments"
+  (kind,version,payload) <- readRaw io
+  ensure (kind == 22 && version == 0x0303 && not (B.null payload) && B.length payload <= 16384) "invalid ServerHello record"
+  let combined = buffer <> payload
+  ensure (B.length combined <= 65536) "ServerHello too large"
+  case messageSize combined of
+    Just n | B.length combined >= n -> ensure (B.length combined == n) "extra plaintext handshake data" >> pure combined
+    _ -> plainHandshake io combined (fragments+1)
+
+encryptedHandshake :: RecordIO -> B.ByteString -> IORef (Word,B.ByteString,Int) -> IO B.ByteString
+encryptedHandshake io secret ref = do
+  (sequenceNo,buffer,ccsCount) <- readIORef ref
+  case messageSize buffer of
+    Just n | B.length buffer >= n -> do
+      ensure (n <= 196608) "handshake message too large"
+      writeIORef ref (sequenceNo,B.drop n buffer,ccsCount)
+      pure (B.take n buffer)
+    Just n | n > 196608 -> abort "handshake message too large"
+    _ -> do
+      (kind,version,payload) <- readRaw io
+      if kind == 20 then do
+        ensure (version == 0x0303 && payload == "\x01" && ccsCount < 2) "invalid server CCS"
+        writeIORef ref (sequenceNo,buffer,ccsCount+1)
+      else do
+        (inner,plain) <- either abort pure (unprotect secret (fromIntegral sequenceNo) kind version payload)
+        ensure (inner == 22 && not (B.null plain)) "encrypted handshake required"
+        ensure (B.length buffer+B.length plain <= 212992) "handshake buffer too large"
+        writeIORef ref (sequenceNo+1,buffer<>plain,ccsCount)
+      encryptedHandshake io secret ref

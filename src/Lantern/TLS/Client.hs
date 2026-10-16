@@ -13,11 +13,14 @@ import Crypto.Random (getRandomBytes)
 import Data.ByteArray (convert,constEq)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as C
+import Data.Char (isAscii, isAlphaNum, toLower)
+import Data.IP (IP(..), fromIPv4, fromIPv6)
 import Data.IORef
 import Data.List (nub)
 import Data.X509
 import Data.X509.CertificateStore
 import Data.X509.Validation
+import Text.Read (readMaybe)
 import System.X509 (getSystemCertificateStore)
 import Lantern.TLS.Crypto
 import Lantern.TLS.Record
@@ -31,12 +34,14 @@ trustFile path = readCertificateStore path >>= maybe (abort "cannot load trust s
 
 clientHandshake :: RecordIO -> TrustStore -> String -> IO (B.ByteString,B.ByteString)
 clientHandshake io trust hostname = do
-  ensure (not (null hostname) && all (\c -> c > ' ' && c < '\DEL') hostname) "invalid TLS hostname"
+  let reference=map toLower hostname
+      ip=readMaybe reference :: Maybe IP
+  ensure (maybe (validDNS reference) (const True) ip) "invalid TLS hostname"
   private <- X.generateSecretKey
   random <- getRandomBytes 32
   session <- getRandomBytes 32
   let public = convert (X.toPublic private) :: B.ByteString
-      ext = extension 0 (vector 2 ("\x00" <> vector 2 (C.pack hostname))) <>
+      ext = (case ip of Nothing -> extension 0 (vector 2 ("\x00" <> vector 2 (C.pack reference))); Just _ -> B.empty) <>
         extension 10 (vector 2 "\x00\x1d") <>
         extension 13 (vector 2 "\x08\x04\x04\x03\x08\x07") <>
         extension 50 (vector 2 "\x04\x01\x05\x01\x06\x01\x04\x03\x05\x03\x08\x04\x08\x05\x08\x07") <>
@@ -64,7 +69,7 @@ clientHandshake io trust hostname = do
   (eeBody,eeKind) <- decodeMessage ee
   ensure (eeKind == 8) "EncryptedExtensions required"
   exts <- either abort pure (runParser (vec 2) eeBody >>= parseExtensions)
-  ensure (length exts == length (nub (map fst exts)) && all ((`elem` [0,16]) . fst) exts) "unsolicited server extension"
+  ensure (length exts == length (nub (map fst exts)) && all ((`elem` (case ip of Nothing -> [0,16]; Just _ -> [16])) . fst) exts) "unsolicited server extension"
   case lookup 0 exts of Nothing -> pure (); Just b -> ensure (B.null b) "invalid SNI acknowledgement"
   case lookup 16 exts of
     Nothing -> pure ()
@@ -76,7 +81,8 @@ clientHandshake io trust hostname = do
   chain <- mapM (either (const (abort "invalid X.509 certificate")) pure . decodeSignedCertificate) chainBytes
   let cache = ValidationCache (\_ _ _ -> pure ValidationCacheUnknown) (\_ _ _ -> pure ())
       checks = defaultChecks {checkLeafKeyPurpose=[KeyUsagePurpose_ServerAuth],checkLeafKeyUsage=[KeyUsage_digitalSignature]}
-  failures <- validate HashSHA256 defaultHooks checks trust cache (hostname,B.empty) (CertificateChain chain)
+      hooks=defaultHooks {hookValidateName = \_ -> validateIdentity reference ip}
+  failures <- validate HashSHA256 hooks checks trust cache (reference,B.empty) (CertificateChain chain)
   ensure (null failures) "server certificate validation failed"
   pub <- case chain of
     c:_ -> pure (certPubKey (getCertificate c))
@@ -181,3 +187,39 @@ encryptedHandshake io secret ref = do
         ensure (B.length buffer+B.length plain <= 212992) "handshake buffer too large"
         writeIORef ref (sequenceNo+1,buffer<>plain,ccsCount)
       encryptedHandshake io secret ref
+
+-- RFC 9525 identity policy is stricter than the certificate verifier's legacy
+-- default (which falls back to Common Name, including for IP-only SANs).
+-- Keep chain/signature/time/purpose verification in the established primitive.
+validateIdentity :: String -> Maybe IP -> Certificate -> [FailedReason]
+validateIdentity reference ip cert =
+  if any matches names then [] else [NameMismatch reference]
+  where
+    names=case extensionGet (certExtensions cert) of
+      Just (ExtSubjectAltName entries) -> entries
+      Nothing -> []
+    matches (AltNameIP bytes)=case ip of
+      Just (IPv4 address) -> bytes==B.pack (map fromIntegral (fromIPv4 address))
+      Just (IPv6 address) -> bytes==B.pack (concatMap (\n -> [fromIntegral (n `div` 256),fromIntegral n]) (fromIPv6 address))
+      Nothing -> False
+    matches (AltNameDNS name)=case ip of
+      Just _ -> False
+      Nothing -> let normalized=map toLower name in
+        case splitLabels normalized of
+          "*":suffix -> not (null suffix) && validDNS (joinLabels suffix) &&
+                        tail (splitLabels reference)==suffix
+          _ -> validDNS normalized && normalized==reference
+    matches _=False
+    joinLabels []=""
+    joinLabels [x]=x
+    joinLabels (x:xs)=x++"."++joinLabels xs
+
+validDNS :: String -> Bool
+validDNS name=not (null name) && length name<=253 && all label (splitLabels name)
+  where label value=not (null value) && length value<=63 && head value/='-' && last value/='-' &&
+          all (\c -> isAscii c && (isAlphaNum c || c=='-')) value
+
+splitLabels :: String -> [String]
+splitLabels name=case break (=='.') name of
+  (part,[]) -> [part]
+  (part,_:rest') -> part:splitLabels rest'

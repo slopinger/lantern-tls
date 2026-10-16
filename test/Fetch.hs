@@ -13,11 +13,15 @@ import qualified Lantern.TLS as TLS
 
 main :: IO ()
 main = do
-  [host,port,trustPath,target] <- getArgs
+  args <- getArgs
+  (host,port,trustPath,target,reference) <- case args of
+    [h,p,t,path] -> pure (h,p,t,path,h)
+    [h,p,t,path,name] -> pure (h,p,t,path,name)
+    _ -> fail "usage: tls-fetch CONNECT_HOST PORT TRUST_FILE|system TARGET [TLS_REFERENCE_NAME]"
   trust <- if trustPath == "system" then TLS.systemTrust else TLS.trustFile trustPath
   addresses <- getAddrInfo (Just defaultHints {addrSocketType=Stream}) (Just host) (Just port)
   bracket (connectAny addresses) N.close $ \s -> do
-    context <- TLS.connect trust host (S.recv s 16384) (S.sendAll s)
+    context <- TLS.connect trust reference (S.recv s 16384) (S.sendAll s)
     TLS.send context ("GET " <> C.pack target <> " HTTP/1.1\r\nHost: " <> C.pack host <> "\r\nConnection: close\r\n\r\n")
     let loop = do
           b <- TLS.receive context

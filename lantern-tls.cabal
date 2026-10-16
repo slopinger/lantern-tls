@@ -10,7 +10,7 @@ library
   hs-source-dirs: src
   exposed-modules: Lantern.TLS, Lantern.TLS.Crypto, Lantern.TLS.Wire, Lantern.TLS.Record, Lantern.TLS.PKI
   other-modules: Lantern.TLS.Credentials, Lantern.TLS.Handshake, Lantern.TLS.Client
-  build-depends: base >=4.18 && <5, bytestring, containers, crypton, memory, crypton-x509, crypton-x509-store, crypton-x509-validation, crypton-x509-system, hourglass
+  build-depends: base >=4.18 && <5, bytestring, containers, crypton, memory, crypton-x509, crypton-x509-store, crypton-x509-validation, crypton-x509-system, hourglass, iproute
   ghc-options: -Wall -Wcompat -O2
   default-language: Haskell2010
 

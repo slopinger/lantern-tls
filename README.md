@@ -6,7 +6,7 @@ KeyUpdate, PEM/DER server-key decoding, and PKCS#10 CSR encoding live here. It d
 not wrap OpenSSL, the Haskell `tls` package, or an HTTP framework.
 
 Crypton supplies cryptographic primitives. Its X.509 packages supply client-side
-certificate decoding and PKIX path/hostname/time/purpose verification. The server
+certificate decoding and PKIX path/time/purpose verification. The server
 credential parser and CSR encoder are ours. Socket ownership stays with callers.
 
 ```haskell
@@ -51,3 +51,9 @@ The development executables `tls-echo` and `tls-fetch` are protocol test tools;
 deadlines, routing, HTTP, ACME, and service integration.
 
 See [research](docs/research.md) and [security model](docs/security.md).
+
+The client requires Subject Alternative Names: DNS names (including only complete
+leftmost-label wildcards) or an exact IP-address SAN. Common Name fallback and
+partial wildcards are rejected. IP literals do not send the SNI extension; DNS
+reference names and SNI are normalized to lowercase. The identity policy is ours;
+certificate decoding, chain signatures, validity and usage checks remain Crypton.

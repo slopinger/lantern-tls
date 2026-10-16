@@ -32,3 +32,15 @@ The limited profile intentionally rejects some otherwise valid TLS peers. It is
 not a drop-in replacement for a complete TLS library. Fatal errors close the
 connection; detailed standards-specific alerts are not implemented. Automatic
 memory wiping, formal protocol verification, and broad fuzzing remain open work.
+
+Client identity checks use an explicit SAN-only policy rather than the pinned
+certificate verifier's legacy name hook. IPv4/IPv6 references match only exact IP
+SAN bytes; DNS references match only valid DNS SANs and complete leftmost-label
+wildcards covering one label. Subject Common Names never establish identity.
+Literal IPs omit SNI. This follows [RFC 9525](https://www.rfc-editor.org/rfc/rfc9525.html)
+and [RFC 6066 section 3](https://www.rfc-editor.org/rfc/rfc6066.html#section-3).
+The pinned crypton-x509-validation 1.6.14 source was inspected: its default name
+hook permits Common Name fallback and checks IP SANs only when DNS SANs also exist.
+Our hook replaces only identity matching, retaining PKIX cryptographic verification.
+Client interoperability fixtures cover IP-only SANs, incorrect IPs, numeric DNS SANs,
+CN-only certificates, wildcard depth, partial wildcards, case and captured SNI.

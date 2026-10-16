@@ -1,7 +1,9 @@
 -- Additional application policy over Crypton's decoded certificates. Signature,
 -- ASN.1, key, and path verification remain with the established primitives.
-module Lantern.TLS.CertificatePolicy (certificatePolicy) where
+module Lantern.TLS.CertificatePolicy (certificatePolicy, certificateSignatureSchemes) where
 
+import qualified Crypto.PubKey.RSA.Types as RSA
+import Crypto.PubKey.ECC.Types (CurveName(..))
 import Control.Monad (unless, forM_)
 import Data.Bits ((.&.), testBit)
 import qualified Data.ByteString as B
@@ -9,6 +11,12 @@ import Data.Char (toLower, isAscii, isAlphaNum)
 import Data.List (isSuffixOf, nub)
 import Data.X509
 import Data.X509.CertificateStore
+
+-- This exact allow-list is also encoded in ClientHello signature_algorithms_cert.
+certificateSignatureSchemes :: B.ByteString
+certificateSignatureSchemes = B.pack
+  [0x04,0x01,0x05,0x01,0x06,0x01,0x04,0x03,0x05,0x03,0x06,0x03,
+   0x08,0x04,0x08,0x05,0x08,0x06,0x08,0x07]
 
 -- Require the presented chain in leaf-first order. Apply every issuer's
 -- constraints independently, which implements intersection without weakening a
@@ -18,6 +26,15 @@ certificatePolicy store presented reference = do
   unless (not (null presented)) (Left "empty certificate chain")
   path <- selectPath presented
   let certificates = map getCertificate path
+  mapM_ (keyPolicy . certPubKey) certificates
+  -- Only signatures actually used to establish the path are checked. An
+  -- independently installed anchor's own signature does not establish trust.
+  forM_ (zip path (drop 1 certificates)) $ \(child,parent) -> do
+    let outer = signedAlg (getSigned child)
+    unless (certSignatureAlg (getCertificate child) == outer)
+      (Left "inconsistent certificate signature algorithms")
+    unless (signatureAllowed outer (certPubKey parent))
+      (Left "unsupported certificate signature algorithm")
   forM_ (zip certificates (drop 1 certificates)) $ \(child,parent) ->
     unless (certIssuerDN child == certSubjectDN parent) (Left "unordered certificate chain")
   forM_ (zip [0..] certificates) $ \(index,issuer) -> do
@@ -62,6 +79,23 @@ certificatePolicy store presented reference = do
         Nothing -> case remaining of
           [] -> Right [current] -- the cryptographic verifier reports UnknownCA
           _ -> (current :) <$> selectPath remaining
+    keyPolicy (PubKeyRSA key) =
+      unless (RSA.public_n key >= 2^(2047 :: Int) && RSA.public_n key < 2^(8192 :: Int) &&
+              odd (RSA.public_n key) && RSA.public_e key >= 3 &&
+              RSA.public_e key <= 4294967295 && odd (RSA.public_e key))
+        (Left "RSA certificate key outside supported bounds")
+    keyPolicy (PubKeyEC (PubKeyEC_Named curve _)) =
+      unless (curve `elem` [SEC_p256r1,SEC_p384r1,SEC_p521r1]) (Left "unsupported certificate curve")
+    keyPolicy PubKeyEd25519{} = Right ()
+    keyPolicy _ = Left "unsupported certificate public key"
+    signatureAllowed (SignatureALG digest PubKeyALG_RSA) PubKeyRSA{} =
+      digest `elem` [HashSHA256,HashSHA384,HashSHA512]
+    signatureAllowed (SignatureALG digest PubKeyALG_RSAPSS) PubKeyRSA{} =
+      digest `elem` [HashSHA256,HashSHA384,HashSHA512]
+    signatureAllowed (SignatureALG digest PubKeyALG_EC) (PubKeyEC (PubKeyEC_Named curve _)) =
+      (digest,curve) `elem` [(HashSHA256,SEC_p256r1),(HashSHA384,SEC_p384r1),(HashSHA512,SEC_p521r1)]
+    signatureAllowed (SignatureALG_IntrinsicHash PubKeyALG_Ed25519) PubKeyEd25519{} = True
+    signatureAllowed _ _ = False
     subjectNames c = case extensionGet (certExtensions c) of
       Nothing -> []
       Just (ExtSubjectAltName ns) -> ns

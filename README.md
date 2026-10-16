@@ -73,3 +73,7 @@ The client adds bounded DNS/IP name-constraint and intermediate-purpose policy;
 unsupported constraint forms fail closed. See [security limits](docs/security.md).
 Consumers sharing Crypton types should use `lib.cryptoPackages pkgs` from this
 flake so the program links one consistent primitive stack (`ram`, not `memory`).
+Certificate public keys and signature algorithms also have explicit bounds;
+RSA moduli must contain 2048–8192 bits throughout the selected path. P-384/P-521
+issuer signatures and RSA-PSS/SHA-512 are supported independently of the more
+limited handshake CertificateVerify profile. See the security profile for details.

@@ -20,6 +20,7 @@ import Data.X509.CertificateStore
 import Data.X509.Validation
 import Text.Read (readMaybe)
 import System.X509 (getSystemCertificateStore)
+import Lantern.TLS.CertificateEncoding
 import Lantern.TLS.CertificatePolicy
 import Lantern.TLS.KeyExchange
 import Lantern.TLS.Negotiation
@@ -44,7 +45,7 @@ clientHandshake io trust hostname = do
   let common = (case ip of Nothing -> extension 0 (vector 2 ("\x00" <> vector 2 (C.pack reference))); Just _ -> B.empty) <>
         extension 10 (vector 2 "\x00\x1d\x00\x17") <>
         extension 13 (vector 2 "\x08\x04\x04\x03\x08\x07") <>
-        extension 50 (vector 2 "\x04\x01\x05\x01\x06\x01\x04\x03\x05\x03\x08\x04\x08\x05\x08\x07") <>
+        extension 50 (vector 2 certificateSignatureSchemes) <>
         extension 16 (vector 2 (vector 1 "http/1.1")) <>
         extension 43 (vector 1 "\x03\x04")
       buildHello key cookie = message 1 ("\x03\x03" <> random <> vector 1 session <>
@@ -110,6 +111,7 @@ clientHandshake io trust hostname = do
   (certificateBody,certificateKind) <- decodeMessage certificate
   ensure (certificateKind == 11) "Certificate required"
   chainBytes <- either abort pure (runParser parseCertificates certificateBody)
+  mapM_ (either abort pure . certificateEncodingPolicy) chainBytes
   chain <- mapM (either (const (abort "invalid X.509 certificate")) pure . decodeSignedCertificate) chainBytes
   let referenceName = case ip of
         Nothing -> AltNameDNS reference

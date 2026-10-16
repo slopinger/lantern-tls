@@ -159,3 +159,26 @@ rather than retaining the parent's restriction. The Nix package applies a one-li
 policy correction to propagate `Just x`. Ancestor constraints are also enforced
 independently by our policy. Root and directly trusted intermediate acceptance and
 rejection fixtures exercise this behavior; no signature primitive is modified.
+
+## Certificate signature and key audit (2026-10-16)
+
+[RFC 8446 sections 4.2.3 and 4.4.2.2](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.2.3)
+distinguish certificate algorithms from handshake signatures and exclude anchor
+self-signatures from path authentication. [RFC 9325 section 4.5](https://www.rfc-editor.org/rfc/rfc9325.html#section-4.5)
+requires RSA server keys of at least 2048 bits. The earlier client checked only
+its leaf RSA byte count and let the verifier accept smaller issuer keys. Independent
+fixtures reproduced acceptance of 1024/2047-bit issuers and a 2047-bit leaf.
+The new policy checks exact modulus bounds throughout the selected path before
+signature verification, retains a bounded exponent, and explicitly restricts
+certificate signatures to the advertised modern algorithms. Adding P-521/SHA-512
+and RSA-PSS/SHA-512 to that advertisement preserves useful stronger-chain support.
+The trust anchor's own signature is not used to establish trust, so legacy anchor
+signatures are not a reason to reject an otherwise strong selected path.
+
+Inspection of the 1.10.0 X.509 AlgorithmIdentifier decoder found that its PSS
+patterns ignore the MGF digest, salt length and context-tag identities. Mutating
+only the unsigned outer algorithm fields of a valid PSS certificate reproduced
+acceptance with both a different MGF hash and a different salt declaration.
+Our pre-decode ASN.1 policy now checks inner/outer structures and the exact PSS
+profile specified in RFC 8446. It retains the established ASN.1 decoder and all
+signature primitives, and applies independently of Nix dependency overrides.

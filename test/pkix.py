@@ -11,14 +11,14 @@ import tempfile
 import threading
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding, ed25519
 from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID, ObjectIdentifier
 
 
 def run(binary):
     now = datetime.datetime.now(datetime.timezone.utc)
     keys = [rsa.generate_private_key(public_exponent=65537, key_size=2048) for _ in range(3)]
-    def cert(name, key, issuer, signing, ca, extensions=()):
+    def cert(name, key, issuer, signing, ca, extensions=(), digest=None, pss=False):
         subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
         b = (x509.CertificateBuilder().subject_name(subject)
              .issuer_name(subject if issuer is None else issuer.subject)
@@ -31,7 +31,28 @@ def run(binary):
                  key_cert_sign=ca, crl_sign=ca, encipher_only=None, decipher_only=None), True))
         for extension, critical in extensions:
             b = b.add_extension(extension, critical)
-        return b.sign(signing, hashes.SHA256())
+        if digest is None or digest.name != 'sha1':
+            algorithm = None if isinstance(signing, ed25519.Ed25519PrivateKey) else digest or hashes.SHA256()
+            options = {'rsa_padding': padding.PSS(mgf=padding.MGF1(algorithm), salt_length=algorithm.digest_size)} if pss else {}
+            return b.sign(signing, algorithm, **options)
+        # cryptography refuses SHA-1 issuance; independent OpenSSL creates this
+        # deliberately obsolete fixture. All keys stay in a temporary directory.
+        initial = b.sign(signing, hashes.SHA256())
+        with tempfile.TemporaryDirectory(prefix='lantern-obsolete-signature-') as tmp:
+            directory = pathlib.Path(tmp)
+            (directory/'input.pem').write_bytes(initial.public_bytes(serialization.Encoding.PEM))
+            (directory/'signer.pem').write_bytes(signing.private_bytes(serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+            command = ['openssl', 'x509', '-in', str(directory/'input.pem'), '-sha1', '-preserve_dates', '-set_serial', str(initial.serial_number)]
+            if issuer is None:
+                command += ['-signkey', str(directory/'signer.pem')]
+            else:
+                (directory/'issuer.pem').write_bytes(issuer.public_bytes(serialization.Encoding.PEM))
+                command += ['-CA', str(directory/'issuer.pem'), '-CAkey', str(directory/'signer.pem')]
+            result = subprocess.run(command, capture_output=True, check=True, timeout=10)
+            obsolete = x509.load_pem_x509_certificate(result.stdout)
+            assert obsolete.signature_hash_algorithm.name == 'sha1'
+            return obsolete
     root = cert('root', keys[0], None, keys[0], True)
     dns = lambda n: x509.DNSName(n)
     ip = lambda n: x509.IPAddress(ipaddress.ip_address(n))
@@ -70,6 +91,22 @@ def run(binary):
         ('issuer-not-ca', [], [dns('www.example.test')], 'www.example.test', False, []),
         ('trusted-intermediate-valid', [], [dns('www.example.test')], 'www.example.test', True, []),
         ('root-valid-constraints', [], [dns('www.example.test')], 'www.example.test', True, []),
+        ('issuer-rsa1024', [], [dns('www.example.test')], 'www.example.test', False, []),
+        ('issuer-rsa2047', [], [dns('www.example.test')], 'www.example.test', False, []),
+        ('leaf-rsa2047', [], [dns('www.example.test')], 'www.example.test', False, []),
+        ('leaf-sha1', [], [dns('www.example.test')], 'www.example.test', False, []),
+        ('root-sha1', [], [dns('www.example.test')], 'www.example.test', True, []),
+        ('leaf-sha224', [], [dns('www.example.test')], 'www.example.test', False, []),
+        ('leaf-sha384', [], [dns('www.example.test')], 'www.example.test', True, []),
+        ('leaf-sha512', [], [dns('www.example.test')], 'www.example.test', True, []),
+        ('issuer-p384', [], [dns('www.example.test')], 'www.example.test', True, []),
+        ('issuer-p521', [], [dns('www.example.test')], 'www.example.test', True, []),
+        ('leaf-pss-sha256', [], [dns('www.example.test')], 'www.example.test', True, []),
+        ('leaf-pss-sha512', [], [dns('www.example.test')], 'www.example.test', True, []),
+        ('issuer-ed25519', [], [dns('www.example.test')], 'www.example.test', True, []),
+        ('leaf-ed25519', [], [dns('www.example.test')], 'www.example.test', True, []),
+        ('leaf-pss-wrong-mgf', [], [dns('www.example.test')], 'www.example.test', False, []),
+        ('leaf-pss-wrong-salt', [], [dns('www.example.test')], 'www.example.test', False, []),
         ('leaf-critical', [], [dns('www.example.test')], 'www.example.test', False, [(unknown, True)]),
         ('leaf-noncritical', [], [dns('www.example.test')], 'www.example.test', True, [(unknown, False)]),
     ]
@@ -92,12 +129,35 @@ def run(binary):
                 constrained_issuer = cert('intermediate', keys[1], root, keys[0], True,
                     [(x509.NameConstraints([dns('example.test' if label.endswith('valid') or label == 'root-valid-constraints' else 'allowed.test')], None), True)])
                 trust.write_bytes(constrained_issuer.public_bytes(serialization.Encoding.PEM))
-            intermediate = cert('intermediate', keys[1], root, keys[0], label != 'issuer-not-ca', extensions + issuer_extra)
-            leaf = cert(reference, keys[2], intermediate, keys[1], False,
+            issuer_key = keys[1]
+            leaf_key = keys[2]
+            digest = hashes.SHA256()
+            if label in ['issuer-rsa1024', 'issuer-rsa2047']:
+                issuer_key = rsa.generate_private_key(public_exponent=65537, key_size=1024 if label.endswith('1024') else 2047)
+            if label == 'leaf-rsa2047':
+                leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2047)
+            if label == 'issuer-ed25519': issuer_key = ed25519.Ed25519PrivateKey.generate()
+            if label == 'leaf-ed25519': leaf_key = ed25519.Ed25519PrivateKey.generate()
+            if label == 'issuer-p384': issuer_key, digest = ec.generate_private_key(ec.SECP384R1()), hashes.SHA384()
+            if label == 'issuer-p521': issuer_key, digest = ec.generate_private_key(ec.SECP521R1()), hashes.SHA512()
+            if label == 'leaf-pss-sha512': digest = hashes.SHA512()
+            if label.startswith('leaf-sha'): digest = {'1': hashes.SHA1, '224': hashes.SHA224, '384': hashes.SHA384, '512': hashes.SHA512}[label.removeprefix('leaf-sha')]()
+            if label == 'root-sha1':
+                trust.write_bytes(cert('root', keys[0], None, keys[0], True, digest=hashes.SHA1()).public_bytes(serialization.Encoding.PEM))
+            intermediate = cert('intermediate', issuer_key, root, keys[0], label != 'issuer-not-ca', extensions + issuer_extra)
+            leaf = cert(reference, leaf_key, intermediate, issuer_key, False,
                 [(x509.SubjectAlternativeName(names), False),
-                 (x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), False)] + extra)
+                 (x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), False)] + extra, digest=digest, pss=label.startswith('leaf-pss-'))
+            if label in ['leaf-pss-wrong-mgf', 'leaf-pss-wrong-salt']:
+                der = leaf.public_bytes(serialization.Encoding.DER)
+                before, after = ((bytes.fromhex('0609608648016503040201'), bytes.fromhex('0609608648016503040202'))
+                    if label.endswith('mgf') else (bytes.fromhex('a203020120'), bytes.fromhex('a20302011f')))
+                index = der.rindex(before)  # change only the outer AlgorithmIdentifier
+                leaf = x509.load_der_x509_certificate(der[:index] + after + der[index+len(before):])
+            key.write_bytes(leaf_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
             chain = d/'chain.pem'; chain.write_bytes(leaf.public_bytes(serialization.Encoding.PEM)+intermediate.public_bytes(serialization.Encoding.PEM))
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.set_ciphers('DEFAULT:@SECLEVEL=0')  # permits intentionally weak test chains
             context.load_cert_chain(chain, key); context.set_ecdh_curve('X25519')
             observed = []
             with socket.socket() as listener:

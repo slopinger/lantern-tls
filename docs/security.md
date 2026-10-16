@@ -105,3 +105,31 @@ groups, fragmented retries/ClientHello2, large cookies, invalid points, second
 retries, group/cipher/session changes, changed SNI/ALPN, and unsolicited extensions.
 OpenSSL stateless-cookie tests exercise full certificate/Finished authentication
 for both cookie-only and P-256 retries. These tests supplement, not replace, review.
+
+## Certificate algorithms and keys
+
+Every selected certificate key, including a trust anchor used to verify a child,
+must be RSA with an exact 2048–8192-bit odd modulus and odd exponent 3–2^32−1,
+a named P-256/P-384/P-521 EC key, or Ed25519. A rounded byte count is insufficient:
+2047-bit moduli occupy 256 bytes. Explicit EC parameters and other key types fail
+closed. The upper RSA/exponent bounds also limit verification work.
+
+The client advertises and permits SHA-256/384/512 RSA PKCS#1/PSS certificate
+signatures, the corresponding P-256/384/521 ECDSA signatures, and Ed25519. This
+list is shared with ClientHello construction. SHA-1, MD5, SHA-224 and unsupported
+schemes cannot establish a path. Inner and outer certificate algorithm identifiers
+must agree. An installed trust anchor's own signature is exempt; its public key
+still meets the key policy. Signature verification remains Crypton code.
+
+Generated-chain regressions cover sub-2048-bit leaf/issuer RSA keys, SHA-1 leaf
+rejection and SHA-1 anchor acceptance, SHA-224 rejection, SHA-384/512 RSA, RSA-PSS,
+and P-384/P-521 issuers. The independent fixture lowers OpenSSL's server-only
+security level to offer intentionally weak certificates; the library's policy
+has no verification bypass.
+
+Before X.509 decoding, CertificateEncoding.hs uses Crypton's ASN.1 primitives to
+compare the inner/outer AlgorithmIdentifier structures and validate PSS MGF1/hash
+and salt parameters. The decoded X.509 type discards those fields, so checking
+only its hash/key enums is insufficient. This check lives in our library and
+applies to Cabal consumers too; it does not depend on a packaging-only parser fix.
+Both wrong-MGF and wrong-salt fixtures reproduced acceptance before this check.

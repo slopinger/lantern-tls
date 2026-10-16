@@ -34,3 +34,10 @@
   issuer constraints across a subordinate CA without its own extension. Keep the
   independent ancestor checks and root acceptance/rejection regressions. This is
   a policy fix; no signature or arithmetic primitive is changed.
+- CertificatePolicy also bounds exact RSA modulus/exponent values throughout the
+  path and restricts certificate signatures/curves. Its certificate scheme list
+  feeds ClientHello. Anchors skip only their own signature check, not key policy.
+  Keep weak-key rejection and strong mixed-algorithm chain acceptance fixtures.
+- CertificateEncoding.hs checks raw inner/outer algorithms and PSS parameters
+  before X.509 decoding discards MGF/salt fields. Use established ASN.1 primitives;
+  do not rely on decoded SignatureALG alone or a Nix-only dependency patch.

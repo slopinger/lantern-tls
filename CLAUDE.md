@@ -45,3 +45,11 @@
 PKI exposes `validateCertificateDNSNames` for DNS-only ACME issuance consistency:
 exact unordered case-insensitive SAN set, no wildcard/CN fallback or extra names;
 one well-formed SAN extension, bounded inputs. This does not verify chain trust.
+
+Client reference names must be supplied as ASCII DNS A-labels or IP literals
+(maximum 253 characters, no whitespace/control characters). Validate the original
+string before ASCII case normalization/IP parsing; Unicode lowercasing must not
+alias an unsupported name to an ASCII certificate identity. IDNA conversion is
+the caller's responsibility. Client tests cover Kelvin/dotted-I rejection, ASCII
+A-label and case success, and zero ClientHello bytes for invalid reference input.
+Cryptographic primitives and PKIX verification are unchanged.

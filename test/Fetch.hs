@@ -9,10 +9,12 @@ import Network.Socket hiding (connect,close)
 import qualified Network.Socket as N
 import qualified Network.Socket.ByteString as S
 import System.Environment (getArgs)
+import GHC.IO.Encoding (setFileSystemEncoding,utf8)
 import qualified Lantern.TLS as TLS
 
 main :: IO ()
 main = do
+  setFileSystemEncoding utf8
   args <- getArgs
   (host,port,trustPath,target,reference) <- case args of
     [h,p,t,path] -> pure (h,p,t,path,h)

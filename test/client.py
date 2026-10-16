@@ -51,8 +51,28 @@ def check_sni(binary, cert, key, reference, expected):
                                 capture_output=True, timeout=10)
         worker.join(timeout=6)
         assert not worker.is_alive() and not errors, errors
-        assert result.returncode == 0 and result.stdout.endswith(b'ok'), result
+        assert result.returncode == 0 and result.stdout.endswith(b'ok'), (result.returncode,result.stderr)
         assert observed == [expected], (reference, observed, expected)
+
+
+
+def reject_before_tls(binary, cert, reference):
+    received = []
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        listener.settimeout(5)
+        def observe():
+            with listener.accept()[0] as peer:
+                peer.settimeout(5)
+                received.append(peer.recv(16384))
+        worker = threading.Thread(target=observe, daemon=True)
+        worker.start()
+        result = subprocess.run([binary, '127.0.0.1', str(listener.getsockname()[1]),
+                                 str(cert), '/', reference], capture_output=True, timeout=10)
+        worker.join(timeout=6)
+        assert not worker.is_alive() and received == [b''], (reference, [len(block) for block in received])
+        assert result.returncode != 0 and b'ASCII DNS A-labels' in result.stderr, result
 
 
 def main():
@@ -63,6 +83,9 @@ def main():
         d=pathlib.Path(tmp)
         cases = [
             ('rsa', 'localhost', 'DNS:localhost', 'localhost', True),
+            ('unicode-fold-kelvin', 'unused', 'DNS:k.example.test', 'K.example.test', False),
+            ('unicode-fold-i', 'unused', 'DNS:i.example.test', 'İ.example.test', False),
+            ('a-label', 'unused', 'DNS:xn--bcher-kva.example.test', 'xn--bcher-kva.example.test', True),
             ('p256-retry', 'localhost', 'DNS:localhost', 'localhost', True),
             ('p256-cookie', 'localhost', 'DNS:localhost', 'localhost', True),
             ('x-cookie', 'localhost', 'DNS:localhost', 'localhost', True),
@@ -80,6 +103,7 @@ def main():
             ('ip6', 'unused', 'IP:::1', '::1', True),
             ('ip6-wrong', '::1', 'IP:::2', '::1', False),
         ]
+        cases = sorted(cases, key=lambda case: not case[0].startswith('unicode-'))
         for kind, host, san, reference, accepted in cases:
             key,cert=d/f'{kind}-key.pem',d/f'{kind}-cert.pem'
             keytype=['-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256'] if kind=='ec' else ['-newkey','rsa:2048']
@@ -98,11 +122,16 @@ def main():
                     except OSError:time.sleep(.02)
                 result=subprocess.run([args.binary,'127.0.0.1',str(port),str(cert),'/',reference],capture_output=True,timeout=10)
                 if not accepted:
-                    assert result.returncode!=0 and b'certificate validation failed' in result.stderr,result
+                    diagnostic = b'ASCII DNS A-labels' if kind.startswith('unicode-') else b'certificate validation failed'
+                    assert result.returncode!=0 and diagnostic in result.stderr,(kind,result.returncode,result.stderr)
                 else:
-                    assert result.returncode==0 and b'HTTP/1.0 200 ok' in result.stdout,(result.stdout,result.stderr)
+                    assert result.returncode==0 and b'HTTP/1.0 200 ok' in result.stdout,(kind,result.returncode,result.stderr)
                     rejected=subprocess.run([args.binary,'127.0.0.1',str(port),'system','/',reference],capture_output=True,timeout=10)
-                    assert rejected.returncode!=0 and b'certificate validation failed' in rejected.stderr,rejected
+                    assert rejected.returncode!=0 and b'certificate validation failed' in rejected.stderr,(kind,rejected.returncode,rejected.stderr)
+                    if kind == 'rsa':
+                        for invalid in ['K.example.test', 'İ.example.test', 'bücher.example.test', 'ｌocalhost',
+                                        ' 127.0.0.1', '127.0.0.1 ', '\t::1', '127.0.0.1\n', 'a'*254]:
+                            reject_before_tls(args.binary, cert, invalid)
                     if kind in ['rsa', 'case', 'ip', 'ip6']:
                         check_sni(args.binary, cert, key, reference, None if kind.startswith('ip') else reference.lower())
             finally:

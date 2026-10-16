@@ -182,3 +182,21 @@ acceptance with both a different MGF hash and a different salt declaration.
 Our pre-decode ASN.1 policy now checks inner/outer structures and the exact PSS
 profile specified in RFC 8446. It retains the established ASN.1 decoder and all
 signature primitives, and applies independently of Nix dependency overrides.
+
+## Reference-name input before case normalization (2026-10-16)
+
+[RFC 9525 section 6.3](https://www.rfc-editor.org/rfc/rfc9525.html#section-6.3)
+provides DNS identity matching rules. This library accepts ASCII reference names
+and delegates IDNA preparation to its caller. Unicode `toLower` before validation
+violated that profile: loopback peers confirmed the old client authenticated
+K.example.test against k.example.test and İ.example.test against i.example.test,
+emitted those ASCII SNI names and sent HTTP with trusted synthetic certificates. The original input is now
+bounded and restricted to printable non-space ASCII before case normalization or
+IP parsing. This also prevents the IP Read instance from tolerating surrounding
+whitespace. ASCII case normalization, SAN-only matching and exact IP comparison
+remain unchanged. Real OpenSSL peers cover the fold aliases and an ASCII A-label;
+a raw observer verifies invalid references close without any ClientHello bytes.
+Test failure diagnostics omit OpenSSL's synthetic session response body.
+
+The tls-fetch fixture reads argv using explicit UTF-8 so non-ASCII regression
+inputs reach the String API consistently across process locales.

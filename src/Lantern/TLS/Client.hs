@@ -36,6 +36,11 @@ trustFile path = readCertificateStore path >>= maybe (abort "cannot load trust s
 
 clientHandshake :: RecordIO -> TrustStore -> String -> IO (B.ByteString,B.ByteString)
 clientHandshake io trust hostname = do
+  -- Reject unsupported input before Unicode folding or the IP Read instance
+  -- can turn it into a different reference (or ignore surrounding whitespace).
+  ensure (length (take 254 hostname) <= 253 &&
+          all (\c -> isAscii c && c > ' ' && c < '\DEL') hostname)
+    "TLS reference name must use ASCII DNS A-labels or IP literals (max 253 characters)"
   let reference=map toLower hostname
       ip=readMaybe reference :: Maybe IP
   ensure (maybe (validDNS reference) (const True) ip) "invalid TLS hostname"

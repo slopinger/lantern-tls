@@ -133,3 +133,11 @@ and salt parameters. The decoded X.509 type discards those fields, so checking
 only its hash/key enums is insufficient. This check lives in our library and
 applies to Cabal consumers too; it does not depend on a packaging-only parser fix.
 Both wrong-MGF and wrong-salt fixtures reproduced acceptance before this check.
+
+Client reference names must be supplied as ASCII DNS A-labels or IP literals
+(maximum 253 characters, no whitespace/control characters). Validate the original
+string before ASCII case normalization/IP parsing; Unicode lowercasing must not
+alias an unsupported name to an ASCII certificate identity. IDNA conversion is
+the caller's responsibility. Client tests cover Kelvin/dotted-I rejection, ASCII
+A-label and case success, and zero ClientHello bytes for invalid reference input.
+Cryptographic primitives and PKIX verification are unchanged.

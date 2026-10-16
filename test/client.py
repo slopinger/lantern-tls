@@ -63,6 +63,9 @@ def main():
         d=pathlib.Path(tmp)
         cases = [
             ('rsa', 'localhost', 'DNS:localhost', 'localhost', True),
+            ('p256-retry', 'localhost', 'DNS:localhost', 'localhost', True),
+            ('p256-cookie', 'localhost', 'DNS:localhost', 'localhost', True),
+            ('x-cookie', 'localhost', 'DNS:localhost', 'localhost', True),
             ('ec', 'localhost', 'DNS:localhost', 'localhost', True),
             ('wrong-host', 'invalid.example', 'DNS:invalid.example', 'localhost', False),
             ('cn-only', 'localhost', None, 'localhost', False),
@@ -85,7 +88,9 @@ def main():
                 '-keyout',str(key),'-out',str(cert)],check=True,capture_output=True)
             port=freeport()
             server=subprocess.Popen(['openssl','s_server','-accept',f'127.0.0.1:{port}',
-                '-cert',str(cert),'-key',str(key),'-www','-tls1_3','-groups','X25519'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                '-cert',str(cert),'-key',str(key),'-www','-tls1_3','-groups',
+                'P-256' if kind.startswith('p256') else 'X25519',
+                *(['-stateless'] if kind in ['p256-cookie','x-cookie'] else [])],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             try:
                 for _ in range(100):
                     try:
@@ -102,7 +107,7 @@ def main():
                         check_sni(args.binary, cert, key, reference, None if kind.startswith('ip') else reference.lower())
             finally:
                 server.terminate();server.wait(timeout=5)
-        print('Client interoperability passed: RSA/ECDSA, SAN-only DNS/IP identities, wildcard scope, no CN fallback, unknown-CA rejection, tickets, HTTP response')
+        print('Client interoperability passed: RSA/ECDSA, SAN-only DNS/IP identities, wildcard scope, no CN fallback, unknown-CA rejection, P-256 retry/cookie, tickets, HTTP response')
 
 
 if __name__=='__main__':main()

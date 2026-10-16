@@ -22,10 +22,10 @@ def port():
         return s.getsockname()[1]
 
 
-def context(cert, alpn=('http/1.1',), keylog=None):
+def context(cert, alpn=('http/1.1',), keylog=None, group='X25519'):
     c = ssl.create_default_context(cafile=str(cert))
     c.minimum_version = c.maximum_version = ssl.TLSVersion.TLSv1_3
-    c.set_ecdh_curve('X25519')
+    c.set_ecdh_curve(group)
     if keylog:
         c.keylog_filename = str(keylog)
     if alpn:
@@ -33,9 +33,9 @@ def context(cert, alpn=('http/1.1',), keylog=None):
     return c
 
 
-def exchange(p, cert, payload, alpn=('http/1.1',), keylog=None):
+def exchange(p, cert, payload, alpn=('http/1.1',), keylog=None, group='X25519'):
     with socket.create_connection(('127.0.0.1', p), timeout=4) as raw:
-        with context(cert, alpn, keylog).wrap_socket(raw, server_hostname='localhost') as s:
+        with context(cert, alpn, keylog, group).wrap_socket(raw, server_hostname='localhost') as s:
             assert s.version() == 'TLSv1.3'
             assert s.cipher()[0] == 'TLS_AES_128_GCM_SHA256'
             assert s.selected_alpn_protocol() == ('http/1.1' if alpn else None)
@@ -150,6 +150,7 @@ def main():
                     except OSError:
                         time.sleep(.02)
                 exchange(p, cert, b'hello TLS\x00\xff')
+                exchange(p, cert, b'P-256 handshake', group='prime256v1')
                 exchange(p, cert, b'no ALPN', ())
                 exchange(p, cert, os.urandom(256*1024))
                 with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:

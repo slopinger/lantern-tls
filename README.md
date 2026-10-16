@@ -24,14 +24,14 @@ backend yourself. There may be one reader and one writer concurrently. Any I/O o
 protocol failure poisons the session; close the underlying transport. Application
 reads/writes require caller deadlines. Both handshakes have a 10-second deadline.
 
-Supported profile: TLS 1.3, X25519, AES-128-GCM/SHA-256. Servers require an
+Supported profile: TLS 1.3, X25519 or P-256 ECDHE, AES-128-GCM/SHA-256. Servers require an
 unencrypted RSA 2048–8192-bit PKCS#1/PKCS#8 key and PEM certificate chain, and use
 RSA-PSS-SHA256. Clients verify RSA-PSS, ECDSA P-256/SHA-256, and Ed25519 server
 CertificateVerify. ALPN is configurable on servers; the client offers HTTP/1.1.
 Application records stream in 16 KiB pieces. KeyUpdate and authenticated closure
 are implemented. Client session tickets are validated structurally and discarded.
 
-Not implemented: TLS 1.2, HelloRetryRequest, P-256 key agreement, resumption/PSK,
+Not implemented: TLS 1.2, resumption/PSK,
 0-RTT, client certificates, OCSP fetching, certificate revocation, session exporters,
 or post-quantum key exchange. This is a limited TLS profile, not a claim of full
 RFC compliance. RSA private values and traffic secrets are not guaranteed to be
@@ -43,6 +43,7 @@ nix flake check
 nix develop -c cabal test --offline
 nix develop -c python test/interop.py --binary ./result/bin/tls-echo
 nix develop -c python test/client.py --binary ./result/bin/tls-fetch
+nix develop -c python test/negotiation.py --server ./result/bin/tls-echo --client ./result/bin/tls-fetch
 ```
 
 The development executables `tls-echo` and `tls-fetch` are protocol test tools;
@@ -57,3 +58,12 @@ leftmost-label wildcards) or an exact IP-address SAN. Common Name fallback and
 partial wildcards are rejected. IP literals do not send the SNI extension; DNS
 reference names and SNI are normalized to lowercase. The identity policy is ours;
 certificate decoding, chain signatures, validity and usage checks remain Crypton.
+
+HelloRetryRequest is implemented in both roles. The client offers X25519 initially
+and advertises P-256 for retry; it echoes a server cookie, rejects a second retry
+and never accepts an unoffered/changed group or cipher. The server selects an
+available supported share, or requests a mutually supported group once. A second
+ClientHello retains its random, session, ciphers and immutable extensions; padding
+and structurally valid PSK binder/age changes are handled without selecting a PSK.
+The original ClientHello is replaced by its synthetic message_hash in the retry
+transcript. Both flights share the existing absolute ten-second handshake budget.

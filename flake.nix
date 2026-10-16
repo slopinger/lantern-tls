@@ -19,6 +19,7 @@
       } ''
         python ${self}/test/interop.py --binary ${package}/bin/tls-echo
         python ${self}/test/client.py --binary ${package}/bin/tls-fetch
+        python ${self}/test/negotiation.py --server ${package}/bin/tls-echo --client ${package}/bin/tls-fetch
         touch $out
       '';
     });

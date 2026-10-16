@@ -44,3 +44,35 @@ hook permits Common Name fallback and checks IP SANs only when DNS SANs also exi
 Our hook replaces only identity matching, retaining PKIX cryptographic verification.
 Client interoperability fixtures cover IP-only SANs, incorrect IPs, numeric DNS SANs,
 CN-only certificates, wildcard depth, partial wildcards, case and captured SNI.
+
+## Key exchange and retry boundaries
+
+X25519 and P-256 use Crypton key generation and ECDH. P-256 wire points must be
+65-byte SEC1 uncompressed values with prefix 04; Crypton's point decoder validates
+coordinates and curve membership, and infinity is rejected. Fresh P-256 scalars
+are nonzero and below the group order. Shared secrets retain their 32-byte width;
+all-zero ECDHE output is rejected. Private share values have no Show instance.
+These checks do not establish a blanket timing or memory-erasure guarantee.
+
+Only one retry is accepted. ServerHello/HRR share strict version, echoed session,
+fixed cipher and extension checks. A requested group must have been advertised
+and not already supplied; the final group must match it. A cookie-only retry is
+supported by the client. Cookie bytes are opaque and can only affect the echoed
+extension, not trust roots or identity. They remain within the 64 KiB handshake
+message cap and 128-record fragmentation cap. Supported-group lists and
+certificate-entry extension lists have 128-entry caps, checked before duplicate
+scans; ServerHello/HRR and encrypted extensions have stricter allowed-set caps. The server keeps retry state in the
+bounded handshake and does not issue cookies or promise stateless DoS protection.
+
+The server verifies second-ClientHello immutable fields and extension order/data,
+allows zero padding changes, and allows PSK ages/binders to update or identities
+to be removed without permitting new identities. PSKs are never selected or used
+for authentication. Early data remains rejected. Compatibility CCS messages are
+bounded and excluded from transcripts. Authentication covers the synthetic
+message_hash, retry and both hello flights before application data is returned.
+
+The independent negotiation fixture checks authenticated OpenSSL retries to both
+groups, fragmented retries/ClientHello2, large cookies, invalid points, second
+retries, group/cipher/session changes, changed SNI/ALPN, and unsolicited extensions.
+OpenSSL stateless-cookie tests exercise full certificate/Finished authentication
+for both cookie-only and P-256 retries. These tests supplement, not replace, review.

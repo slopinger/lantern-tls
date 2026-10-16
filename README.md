@@ -77,3 +77,7 @@ Certificate public keys and signature algorithms also have explicit bounds;
 RSA moduli must contain 2048–8192 bits throughout the selected path. P-384/P-521
 issuer signatures and RSA-PSS/SHA-512 are supported independently of the more
 limited handshake CertificateVerify profile. See the security profile for details.
+
+PKI exposes `validateCertificateDNSNames` for DNS-only ACME issuance consistency:
+exact unordered case-insensitive SAN set, no wildcard/CN fallback or extra names;
+one well-formed SAN extension, bounded inputs. This does not verify chain trust.

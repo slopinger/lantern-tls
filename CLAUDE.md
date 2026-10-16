@@ -41,3 +41,7 @@
 - CertificateEncoding.hs checks raw inner/outer algorithms and PSS parameters
   before X.509 decoding discards MGF/salt fields. Use established ASN.1 primitives;
   do not rely on decoded SignatureALG alone or a Nix-only dependency patch.
+
+PKI exposes `validateCertificateDNSNames` for DNS-only ACME issuance consistency:
+exact unordered case-insensitive SAN set, no wildcard/CN fallback or extra names;
+one well-formed SAN extension, bounded inputs. This does not verify chain trust.

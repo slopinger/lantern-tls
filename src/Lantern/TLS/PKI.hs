@@ -2,7 +2,7 @@
 -- | Key and CSR glue for ACME. All RSA operations remain crypton primitives.
 module Lantern.TLS.PKI
   ( Key, generateKey, decodeKeyPEM, encodeKeyPEM, publicParts, signSHA256
-  , createCSR, base64URL, certificateTimes
+  , createCSR, base64URL, certificateTimes, validateCertificateDNSNames
   ) where
 import Control.Monad (unless)
 import Crypto.Hash (SHA256(..))
@@ -11,7 +11,10 @@ import qualified Crypto.PubKey.RSA.PKCS15 as P
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as C
 import Data.Hourglass (Elapsed(..),timeGetElapsed)
-import Data.X509 (decodeSignedCertificate,getCertificate,certValidity)
+import Data.X509 (decodeSignedCertificate,getCertificate,certValidity,certExtensions,
+  Extensions(..),ExtensionRaw(..),extensionGet,ExtSubjectAltName(..),AltName(..))
+import Data.List (sort,nub)
+import Data.Char (isAscii,toLower)
 import Lantern.TLS.Credentials (decodePrivateKey,pem)
 import Lantern.TLS.Wire (abort)
 
@@ -54,6 +57,38 @@ certificateTimes bytes = do
   let (start,end)=certValidity (getCertificate cert)
       seconds t = let Elapsed s=timeGetElapsed t in toInteger s
   pure (seconds start,seconds end)
+
+-- | Check an ACME DNS-only leaf against the exact requested identifiers.
+-- This is issuance consistency, not chain trust verification or wildcard matching.
+validateCertificateDNSNames :: [B.ByteString] -> B.ByteString -> Either String ()
+validateCertificateDNSNames expected bytes = do
+  unless (B.length bytes <= 1048576 && not (null expected) && length expected <= 100)
+    (Left "invalid certificate identity input size")
+  certs <- pem "CERTIFICATE" bytes
+  first <- case certs of c:_ -> Right c; _ -> Left "empty certificate chain"
+  cert <- getCertificate <$> decodeSignedCertificate first
+  let Extensions raw = certExtensions cert
+      extensions = maybe [] id raw
+      sans = [() | ExtensionRaw oid _ _ <- extensions, oid == [2,5,29,17]]
+  unless (length extensions <= 128 && length sans == 1)
+    (Left "exactly one subjectAltName extension required")
+  entries <- case extensionGet (certExtensions cert) of
+    Just (ExtSubjectAltName ns) -> Right ns
+    Nothing -> Left "malformed subjectAltName extension"
+  unless (not (null entries) && length entries <= 100) (Left "invalid certificate DNS name count")
+  names <- mapM dns entries
+  let requested = map (map toLower . C.unpack) expected
+  unless (all valid requested && length requested == length (nub requested) &&
+          length names == length (nub names) && sort names == sort requested)
+    (Left "certificate DNS identifiers differ from request")
+  where
+    dns (AltNameDNS name) | valid name = Right (map toLower name)
+    dns _ = Left "invalid or non-DNS certificate identifier"
+    valid name = not (null name) && length name <= 253 && all label (labels name)
+    label value = not (null value) && length value <= 63 && head value /= '-' && last value /= '-' &&
+      all (\c -> isAscii c && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                               (c >= '0' && c <= '9') || c == '-')) value
+    labels name = case break (=='.') name of (part,[]) -> [part]; (part,_:rest) -> part:labels rest
 
 unsigned :: Integer -> B.ByteString
 unsigned n | n <= 0 = "\x00"

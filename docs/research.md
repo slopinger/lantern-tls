@@ -127,3 +127,35 @@ including stateless cookies. A separate Python wire peer probes illegal retries
 and second-hello modifications and inspects cookie/key-share reconstruction. It
 also tests malformed P-256 encodings, nonzero padding, PSK-identity additions and
 large fragmented cookies. Test keys and peer secrets are temporary and unpublished.
+
+## Certificate dependency audit (2026-10-16)
+
+[CERT VU#862559](https://kb.cert.org/vuls/id/862559/) identifies missing
+NameConstraints in crypton-x509-validation before 1.9.1 (CVE-2026-9648).
+Inspecting the original 1.6.14 pin and reproducing acceptance of independently
+generated violating chains confirmed this affected our client. Unknown critical
+extensions were also accepted. No production Lantern service was deployed.
+
+The official [1.10.0 source](https://hackage.haskell.org/package/crypton-x509-validation-1.10.0/src/)
+adds constraint checking and a critical-extension sweep. Its IP, URI and email
+subtree matchers remain unimplemented; an upgrade alone would leave IP constraints
+unenforced. Our additional decoded-certificate policy enforces DNS/IP constraints
+and rejects unsupported forms, while retaining Crypton for ASN.1, signatures and
+path cryptography. This follows [RFC 5280 section 4.2.1.10](https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.10).
+The coherent stack uses crypton 2.2.1, certificate packages 1.10.0, crypton ASN.1/PEM,
+ram and time-hourglass, fetched by fixed hashes for offline sandbox builds.
+The regression suite exercises valid chains as well as invalid chains and verifies
+rejection happens before application bytes. This remains a limited, unaudited profile.
+
+The initial 2.2.0 upgrade compiled but all three primitive test suites failed on
+this VM (AVX present, AVX2/BMI2 absent). The official 2.2.1 changelog documents
+global AVX2/BMI2 compiler flags in 2.1.8–2.2.0 and fixes baseline portability and
+runtime dispatch ([upstream change](https://github.com/kazu-yamamoto/crypton/pull/317)).
+We pin the corrected release; no primitives or tests are replaced or disabled.
+
+A valid constrained-root fixture exposed another upstream policy defect:
+`stricter (Just x) Nothing` rejects a subordinate CA that omits NameConstraints,
+rather than retaining the parent's restriction. The Nix package applies a one-line
+policy correction to propagate `Just x`. Ancestor constraints are also enforced
+independently by our policy. Root and directly trusted intermediate acceptance and
+rejection fixtures exercise this behavior; no signature primitive is modified.

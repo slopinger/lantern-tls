@@ -39,11 +39,40 @@ SAN bytes; DNS references match only valid DNS SANs and complete leftmost-label
 wildcards covering one label. Subject Common Names never establish identity.
 Literal IPs omit SNI. This follows [RFC 9525](https://www.rfc-editor.org/rfc/rfc9525.html)
 and [RFC 6066 section 3](https://www.rfc-editor.org/rfc/rfc6066.html#section-3).
-The pinned crypton-x509-validation 1.6.14 source was inspected: its default name
-hook permits Common Name fallback and checks IP SANs only when DNS SANs also exist.
-Our hook replaces only identity matching, retaining PKIX cryptographic verification.
+The initial crypton-x509-validation 1.6.14 pin was found vulnerable to missing
+name-constraint and critical-extension enforcement and has been replaced. The
+current pin is 1.10.0 with Crypton 2.2.1; certificate signatures, decoding and
+path/time checks remain delegated to those dependencies. Our SAN-only hook
+replaces their default identity policy.
 Client interoperability fixtures cover IP-only SANs, incorrect IPs, numeric DNS SANs,
 CN-only certificates, wildcard depth, partial wildcards, case and captured SNI.
+
+## Certificate-chain policy
+
+`CertificatePolicy.hs` adds bounded application checks over decoded X.509 data:
+leaf-first ordered chains, duplicate and malformed known extensions, a restricted
+critical-extension set, server-auth purpose throughout the chain, and DNS/IPv4/
+IPv6 permitted and excluded subtrees. Every issuer (including the selected trust
+anchor) constrains all subordinate SANs and the actual reference identity; a
+missing intermediate constraint cannot weaken an ancestor. IP masks are applied
+to address bytes. DNS comparisons are case insensitive and respect label boundaries.
+The cryptographic path validator runs as well; this policy cannot bypass it.
+
+Only DNS and IP constraint forms with minimum zero and absent maximum are supported.
+Other forms fail closed, including directoryName, URI and email constraints.
+Self-issued intermediate exceptions and alternate-path discovery are not implemented;
+some otherwise valid constrained chains are rejected by this restricted profile or
+by the dependency's stricter DNS constraint behavior. The Nix primitive set
+includes a one-line RFC 5280 inheritance fix: a CA omitting NameConstraints
+inherits its issuer's constraints. Our policy independently enforces all ancestors. Each certificate has at most
+128 extensions and 128 SANs, and each constraint extension at most 64 subtrees.
+Revocation, policy-tree processing and broad PKIX conformance remain outside this
+profile. Unknown critical extensions are rejected rather than ignored.
+
+`test/pkix.py` generates independent root/intermediate/leaf chains and checks both
+acceptance and rejection, including that no HTTP request reaches rejected peers.
+The old pin accepted DNS and IP constraint violations and an unknown critical
+extension; these are regression cases, not evidence of a deployment compromise.
 
 ## Key exchange and retry boundaries
 

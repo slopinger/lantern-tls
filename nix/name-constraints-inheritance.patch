@@ -1,0 +1,11 @@
+--- a/Data/X509/Validation.hs
++++ b/Data/X509/Validation.hs
+@@ -618,7 +618,7 @@
+     -> Maybe ExtNameConstraints -- should be stricter
+     -> Either [FailedReason] (Maybe ExtNameConstraints)
+ stricter Nothing mnc = Right mnc
+-stricter (Just x) Nothing = Left [InvalidName $ show x]
++stricter (Just x) Nothing = Right (Just x)
+ stricter
+     (Just (ExtNameConstraints permitted0 excluded0))
+     (Just (ExtNameConstraints permitted1 excluded1))

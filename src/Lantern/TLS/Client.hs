@@ -20,6 +20,7 @@ import Data.X509.CertificateStore
 import Data.X509.Validation
 import Text.Read (readMaybe)
 import System.X509 (getSystemCertificateStore)
+import Lantern.TLS.CertificatePolicy
 import Lantern.TLS.KeyExchange
 import Lantern.TLS.Negotiation
 import Lantern.TLS.Crypto
@@ -110,8 +111,13 @@ clientHandshake io trust hostname = do
   ensure (certificateKind == 11) "Certificate required"
   chainBytes <- either abort pure (runParser parseCertificates certificateBody)
   chain <- mapM (either (const (abort "invalid X.509 certificate")) pure . decodeSignedCertificate) chainBytes
+  let referenceName = case ip of
+        Nothing -> AltNameDNS reference
+        Just (IPv4 address) -> AltNameIP (B.pack (map fromIntegral (fromIPv4 address)))
+        Just (IPv6 address) -> AltNameIP (B.pack (concatMap (\w -> [fromIntegral (w `div` 256),fromIntegral w]) (fromIPv6 address)))
+  either abort pure (certificatePolicy trust chain referenceName)
   let cache = ValidationCache (\_ _ _ -> pure ValidationCacheUnknown) (\_ _ _ -> pure ())
-      checks = defaultChecks {checkLeafKeyPurpose=[KeyUsagePurpose_ServerAuth],checkLeafKeyUsage=[KeyUsage_digitalSignature]}
+      checks = defaultChecks {checkStrictOrdering=True,checkLeafKeyPurpose=[KeyUsagePurpose_ServerAuth],checkLeafKeyUsage=[KeyUsage_digitalSignature]}
       hooks=defaultHooks {hookValidateName = \_ -> validateIdentity reference ip}
   failures <- validate HashSHA256 hooks checks trust cache (reference,B.empty) (CertificateChain chain)
   ensure (null failures) "server certificate validation failed"

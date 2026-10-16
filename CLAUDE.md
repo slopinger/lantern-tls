@@ -23,3 +23,14 @@
   client supports cookies, server holds bounded state and never selects PSKs.
 - test/negotiation.py adds adversarial retry/point/ClientHello2 checks and fully
   authenticated OpenSSL retries to both groups; flake checks run it offline.
+
+- PKIX security audit replaced vulnerable crypton-x509-validation 1.6.14 with 1.10.0
+  and Crypton 2.2.1. nix/crypto-packages.nix exports a coherent primitive set through
+  flake lib.cryptoPackages; consumers must use it (ram/time-hourglass types).
+- CertificatePolicy.hs supplements dependency verification with bounded DNS/IP
+  constraints, intermediate EKU and extension policy. Unsupported constraint forms
+  fail closed. test/pkix.py generates chains offline; included in flake checks.
+- The shared primitive set carries nix/name-constraints-inheritance.patch: retain
+  issuer constraints across a subordinate CA without its own extension. Keep the
+  independent ancestor checks and root acceptance/rejection regressions. This is
+  a policy fix; no signature or arithmetic primitive is changed.

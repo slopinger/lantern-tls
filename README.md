@@ -67,3 +67,9 @@ ClientHello retains its random, session, ciphers and immutable extensions; paddi
 and structurally valid PSK binder/age changes are handled without selecting a PSK.
 The original ClientHello is replaced by its synthetic message_hash in the retry
 transcript. Both flights share the existing absolute ten-second handshake budget.
+
+Certificate-chain validation pins Crypton 2.2.1 and crypton-x509-validation 1.10.0.
+The client adds bounded DNS/IP name-constraint and intermediate-purpose policy;
+unsupported constraint forms fail closed. See [security limits](docs/security.md).
+Consumers sharing Crypton types should use `lib.cryptoPackages pkgs` from this
+flake so the program links one consistent primitive stack (`ram`, not `memory`).

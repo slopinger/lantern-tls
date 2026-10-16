@@ -31,7 +31,7 @@ accept credentials protocols recv transmit = do
   (rx,tx) <- maybe (abort "TLS handshake timeout") pure result
   Context io <$> newMVar (Traffic rx 0) <*> newMVar (Traffic tx 0) <*> newIORef Open <*> pure False
 
--- | Client handshake with full PKIX hostname/time/path validation against an
+-- | Client handshake with restricted certificate identity/time/path validation against an
 -- explicit trust store. No insecure mode. Uses our own TLS handshake and records.
 connect :: TrustStore -> String -> IO B.ByteString -> (B.ByteString -> IO ()) -> IO Context
 connect trust hostname recv transmit = do

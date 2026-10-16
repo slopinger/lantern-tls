@@ -5,8 +5,9 @@
     systems = [ "x86_64-linux" "aarch64-linux" ];
     each = nixpkgs.lib.genAttrs systems;
   in {
+    lib.cryptoPackages = pkgs: import ./nix/crypto-packages.nix { inherit pkgs; };
     packages = each (system: let pkgs=nixpkgs.legacyPackages.${system}; in {
-      default = pkgs.haskellPackages.callCabal2nix "lantern-tls" self {};
+      default = (self.lib.cryptoPackages pkgs).callCabal2nix "lantern-tls" self {};
     });
     checks = each (system: let
       pkgs=nixpkgs.legacyPackages.${system};
@@ -18,13 +19,14 @@
         nativeBuildInputs = [ python pkgs.openssl ];
       } ''
         python ${self}/test/interop.py --binary ${package}/bin/tls-echo
+        python ${self}/test/pkix.py --binary ${package}/bin/tls-fetch
         python ${self}/test/client.py --binary ${package}/bin/tls-fetch
         python ${self}/test/negotiation.py --server ${package}/bin/tls-echo --client ${package}/bin/tls-fetch
         touch $out
       '';
     });
     devShells = each (system: let pkgs=nixpkgs.legacyPackages.${system}; in {
-      default=pkgs.haskellPackages.shellFor {
+      default=(self.lib.cryptoPackages pkgs).shellFor {
         packages = _: [ self.packages.${system}.default ];
         nativeBuildInputs = [ pkgs.cabal-install pkgs.openssl
           (pkgs.python3.withPackages (p: [ p.cryptography ])) ];

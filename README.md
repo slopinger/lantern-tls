@@ -55,7 +55,7 @@ nix develop -c python test/negotiation.py --server ./result/bin/tls-echo --clien
 
 The development executables `tls-echo` and `tls-fetch` are protocol test tools;
 `tls-echo` deliberately binds loopback and has no server admission policy.
-[Lantern](https://git.freifick.net/slop/lantern) supplies connection limits,
+[Lantern](https://github.com/slopinger/lantern) supplies connection limits,
 deadlines, routing, HTTP, ACME, and service integration.
 
 See [research](docs/research.md) and [security model](docs/security.md).

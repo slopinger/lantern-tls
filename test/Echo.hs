@@ -28,6 +28,7 @@ main = do
         let loop = do
               b <- TLS.receive context
               unless (B.null b) (TLS.send context b >> loop)
-        loop) (\result -> do
+        loop
+        TLS.close context) (\result -> do
           case result of Left (e :: SomeException) -> hPutStrLn stderr (displayException e); Right () -> pure ()
           N.close peer)

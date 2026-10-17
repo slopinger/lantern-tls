@@ -200,3 +200,14 @@ Test failure diagnostics omit OpenSSL's synthetic session response body.
 
 The tls-fetch fixture reads argv using explicit UTF-8 so non-ASCII regression
 inputs reach the String API consistently across process locales.
+
+## Directional closure audit
+
+[RFC 8446 section 6.1](https://www.rfc-editor.org/rfc/rfc8446.html#section-6.1)
+separates write closure from read closure. The previous shared closed flag made
+local close return immediate read EOF and receipt of peer close automatically
+close writes, discarding the application opportunity to finish its direction.
+Track read closure, write closure and failure independently; changes to shared
+state are atomic, while the existing direction locks serialize record sequences.
+Repeated close emits no additional record. A failed alert write poisons the
+context to prevent nonce/state reuse. No cryptographic primitives change.

@@ -141,3 +141,12 @@ alias an unsupported name to an ASCII certificate identity. IDNA conversion is
 the caller's responsibility. Client tests cover Kelvin/dotted-I rejection, ASCII
 A-label and case success, and zero ClientHello bytes for invalid reference input.
 Cryptographic primitives and PKIX verification are unchanged.
+
+TLS closure is directional: close sends an idempotent write-side close_notify;
+receive only returns EOF after authenticating the peer alert. Receiving that
+alert does not prevent pending writes or automatically send a reply. Callers
+must explicitly close their write direction and own backend closure/deadlines.
+Read/write/close failures poison both directions. KeyUpdate requests after local
+write closure never emit a record after close_notify. test/Closure.hs exercises
+both directions over real handshakes with deterministic in-memory transports;
+the echo/fetch tools explicitly close after their read loop.

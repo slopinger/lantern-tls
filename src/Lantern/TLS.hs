@@ -19,7 +19,14 @@ import Lantern.TLS.Record
 import Lantern.TLS.Wire
 
 data Traffic = Traffic B.ByteString Word64
-data ConnectionState = Open | Closed | Failed deriving Eq
+data ConnectionState = ConnectionState
+  { readClosed :: Bool, writeClosed :: Bool, poisoned :: Bool }
+
+openState :: ConnectionState
+openState = ConnectionState False False False
+
+poison :: IORef ConnectionState -> IO ()
+poison ref = atomicModifyIORef' ref (\state -> (state { poisoned = True },()))
 data Context = Context RecordIO (MVar Traffic) (MVar Traffic) (IORef ConnectionState) Bool
 
 -- | Single server handshake, 10 second absolute deadline. The backend receive
@@ -29,7 +36,7 @@ accept credentials protocols recv transmit = do
   io <- newRecordIO recv transmit
   result <- timeout 10000000 (serverHandshake io credentials protocols)
   (rx,tx) <- maybe (abort "TLS handshake timeout") pure result
-  Context io <$> newMVar (Traffic rx 0) <*> newMVar (Traffic tx 0) <*> newIORef Open <*> pure False
+  Context io <$> newMVar (Traffic rx 0) <*> newMVar (Traffic tx 0) <*> newIORef openState <*> pure False
 
 -- | Client handshake with restricted certificate identity/time/path validation against an
 -- explicit trust store. No insecure mode. Uses our own TLS handshake and records.
@@ -38,18 +45,17 @@ connect trust hostname recv transmit = do
   io <- newRecordIO recv transmit
   result <- timeout 10000000 (clientHandshake io trust hostname)
   (rx,tx) <- maybe (abort "TLS client handshake timeout") pure result
-  Context io <$> newMVar (Traffic rx 0) <*> newMVar (Traffic tx 0) <*> newIORef Open <*> pure True
+  Context io <$> newMVar (Traffic rx 0) <*> newMVar (Traffic tx 0) <*> newIORef openState <*> pure True
 
 -- | One reader and one writer may operate concurrently. A key update is applied
 -- before returning any later application data. Truncation is an error, not EOF.
 receive :: Context -> IO B.ByteString
 receive context@(Context io rx _ closed tickets) = (modifyMVar rx $ \initial -> do
   done <- readIORef closed
-  case done of
-    Closed -> pure (initial,B.empty)
-    Failed -> abort "TLS context is poisoned"
-    Open -> loop initial B.empty (0 :: Int))
-    `onException` writeIORef closed Failed
+  ensure (not (poisoned done)) "TLS context is poisoned"
+  if readClosed done then pure (initial,B.empty)
+    else loop initial B.empty (0 :: Int))
+    `onException` poison closed
   where
     loop state@(Traffic secret seqNo) pending emptyRecords = do
       ensure (emptyRecords < 64) "too many empty TLS records"
@@ -63,8 +69,7 @@ receive context@(Context io rx _ closed tickets) = (modifyMVar rx $ \initial -> 
         21 -> do
           ensure (B.null pending && B.length plain == 2 && B.head plain `elem` [1,2]) "invalid alert"
           if B.index plain 1 == 0 then do
-            writeIORef closed Closed
-            sendClose context
+            atomicModifyIORef' closed (\state -> (state { readClosed = True },()))
             pure (advanced,B.empty)
           else abort "peer TLS alert"
         22 -> do
@@ -102,10 +107,10 @@ receive context@(Context io rx _ closed tickets) = (modifyMVar rx $ \initial -> 
 send :: Context -> B.ByteString -> IO ()
 send (Context io _ tx closed _) bytes = unless (B.null bytes) $ (modifyMVar_ tx $ \state -> do
   done <- readIORef closed
-  ensure (done == Open) "TLS connection closed or poisoned"
+  ensure (not (writeClosed done || poisoned done)) "TLS connection closed or poisoned"
   Traffic secret seqNo <- rotateIfNeeded io state
   next <- sendProtected io secret seqNo 23 bytes
-  pure (Traffic secret next)) `onException` writeIORef closed Failed
+  pure (Traffic secret next)) `onException` poison closed
 
 -- Re-key well before the conservative 2^23-record AES-GCM usage cap.
 rotateIfNeeded :: RecordIO -> Traffic -> IO Traffic
@@ -116,18 +121,22 @@ rotateIfNeeded io state@(Traffic secret n)
       pure (Traffic (nextSecret secret) 0)
 
 updateWrite :: Context -> IO ()
-updateWrite (Context io _ tx _ _) = modifyMVar_ tx $ \(Traffic secret n) -> do
-  _ <- sendProtected io secret n 22 "\x18\x00\x00\x01\x00"
-  pure (Traffic (nextSecret secret) 0)
+updateWrite (Context io _ tx closed _) = modifyMVar_ tx $ \state@(Traffic secret n) -> do
+  done <- readIORef closed
+  ensure (not (poisoned done)) "TLS context is poisoned"
+  -- No records may follow our close_notify. A peer requesting an update can
+  -- still finish its direction, but we will send no further application data.
+  if writeClosed done then pure state else do
+    _ <- sendProtected io secret n 22 "\x18\x00\x00\x01\x00"
+    pure (Traffic (nextSecret secret) 0)
 
-sendClose :: Context -> IO ()
-sendClose (Context io _ tx _ _) = modifyMVar_ tx $ \(Traffic secret n) -> do
-  next <- sendProtected io secret n 21 "\x01\x00"
-  pure (Traffic secret next)
-
+-- | Close the write direction once, without waiting for the peer. Reads remain
+-- usable until authenticated peer closure; caller still owns the backend and
+-- must impose a deadline. Receipt of peer closure does not automatically reply.
 close :: Context -> IO ()
-close (Context io _ tx closed _) = modifyMVar_ tx $ \state@(Traffic secret n) -> do
-  already <- atomicModifyIORef' closed (\old -> (if old == Open then Closed else old,old))
-  if already /= Open then pure state else do
+close (Context io _ tx closed _) = (modifyMVar_ tx $ \state@(Traffic secret n) -> do
+  already <- atomicModifyIORef' closed $ \old ->
+    (if poisoned old then old else old { writeClosed = True },old)
+  if writeClosed already || poisoned already then pure state else do
     next <- sendProtected io secret n 21 "\x01\x00"
-    pure (Traffic secret next)
+    pure (Traffic secret next)) `onException` poison closed

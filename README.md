@@ -24,6 +24,13 @@ backend yourself. There may be one reader and one writer concurrently. Any I/O o
 protocol failure poisons the session; close the underlying transport. Application
 reads/writes require caller deadlines. Both handshakes have a 10-second deadline.
 
+`close` sends one close_notify for the write direction; repeated calls are no-ops.
+It does not end reads: `receive` continues until the peer sends its authenticated
+close_notify, and bare backend EOF remains an error. Receiving peer closure ends
+reads but permits remaining application writes. Call `close` explicitly when those
+writes are complete; there is no automatic closure reply. A failed close poisons
+the context, like a failed send or receive. Close the backend on failure.
+
 Supported profile: TLS 1.3, X25519 or P-256 ECDHE, AES-128-GCM/SHA-256. Servers require an
 unencrypted RSA 2048–8192-bit PKCS#1/PKCS#8 key and PEM certificate chain, and use
 RSA-PSS-SHA256. Clients verify RSA-PSS, ECDSA P-256/SHA-256, and Ed25519 server

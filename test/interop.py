@@ -136,6 +136,8 @@ def main():
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
                         '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',
                         '-keyout', str(key), '-out', str(cert)], check=True, capture_output=True)
+        subprocess.run([str(pathlib.Path(args.binary).resolve().with_name('tls-closure-test')),
+                        str(cert), str(key)], check=True, timeout=10)
         p = port()
         with open(d/'server.log', 'w+') as log:
             server = subprocess.Popen([args.binary, str(cert), str(key), str(p)], stdout=log, stderr=log)

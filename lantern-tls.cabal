@@ -35,3 +35,10 @@ executable tls-fetch
   build-depends: base, bytestring, network, lantern-tls
   ghc-options: -Wall -threaded
   default-language: Haskell2010
+
+executable tls-closure-test
+  hs-source-dirs: test
+  main-is: Closure.hs
+  build-depends: base, bytestring, lantern-tls
+  ghc-options: -Wall -threaded
+  default-language: Haskell2010

@@ -29,6 +29,7 @@ main = do
           b <- TLS.receive context
           unless (B.null b) (B.putStr b >> loop)
     loop
+    TLS.close context
   where
     connectAny [] = fail "no reachable address"
     connectAny (a:as) = (bracketOnError (socket (addrFamily a) Stream defaultProtocol) N.close $ \s ->
